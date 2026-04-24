@@ -1,0 +1,34 @@
+services:
+  mic:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mic-access
+    command: ["python3", "access_mic.py"]
+    network_mode: host
+    runtime: nvidia
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    volumes:
+      - /var/cache/hf-models:/hf-cache
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HF_HOME=/hf-cache
+      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+          cpus: '4'
+        reservations:
+          memory: 6g
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu, compute, utility]
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
