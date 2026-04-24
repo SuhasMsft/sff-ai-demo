@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: speech
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: hf-cache-pv
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes: [ReadWriteOnce]
+  hostPath:
+    path: /var/cache/hf-models
+    type: DirectoryOrCreate
+  persistentVolumeReclaimPolicy: Retain
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hf-cache-pvc
+  namespace: speech
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+  volumeName: hf-cache-pv
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: speech-recognizer
+  namespace: speech
+  labels:
+    app: speech-recognizer
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: speech-recognizer
+  template:
+    metadata:
+      labels:
+        app: speech-recognizer
+    spec:
+      runtimeClassName: nvidia
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      - name: mic-access
+        image: localhost:5000/mic-access:latest
+        imagePullPolicy: Always
+        command: ["python3", "access_mic.py"]
+        env:
+        - name: HF_HOME
+          value: /cache/huggingface
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: compute,utility
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        resources:
+          requests:
+            memory: "6Gi"
+            cpu: "2"
+            nvidia.com/gpu: 1
+          limits:
+            memory: "8Gi"
+            cpu: "4"
+            nvidia.com/gpu: 1
+        volumeMounts:
+        - name: hf-cache
+          mountPath: /cache/huggingface
+        - name: snd
+          mountPath: /dev/snd
+        securityContext:
+          privileged: true
+      volumes:
+      - name: hf-cache
+        persistentVolumeClaim:
+          claimName: hf-cache-pvc
+      - name: snd
+        hostPath:
+          path: /dev/snd
+          type: Directory
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
