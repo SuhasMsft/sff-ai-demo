@@ -183,7 +183,9 @@ def initialize():
             print(f"Model loaded on: {device}")
 
 def makeSpeechCallback(utteranceQueue, minTalkingThreshold=10, maxSilenceThreshold=10, quietThreshold=0.01):
-    audioBuffer = []
+    from collections import deque
+    MAX_BUFFER_CHUNKS = 300  # ~30 seconds at 48kHz/10 blocksize
+    audioBuffer = deque(maxlen=MAX_BUFFER_CHUNKS)
     silenceCount = 0
     talkingCount = 0
 
@@ -217,7 +219,7 @@ def makeSpeechCallback(utteranceQueue, minTalkingThreshold=10, maxSilenceThresho
             utteranceQueue.put(fullAudio)
 
         # Whether or not there was talking, start over
-        audioBuffer = []
+        audioBuffer.clear()
         silenceCount = 0
         talkingCount = 0
 

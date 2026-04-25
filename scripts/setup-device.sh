@@ -6,9 +6,16 @@ set -euo pipefail
 echo "=== SFF AI Demo — Device Setup ==="
 
 # 1. GPU device nodes (lost on every reboot — /dev is tmpfs)
-echo "[1/7] Creating GPU device nodes..."
+echo "[1/7] Creating GPU device nodes + udev rule..."
 sudo mknod -m 666 /dev/nvidia0 c 195 0 2>/dev/null || true
 sudo mknod -m 666 /dev/nvidiactl c 195 255 2>/dev/null || true
+# Install udev rule for persistence across reboots
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$SCRIPT_DIR/99-nvidia-device-nodes.rules" ]; then
+    sudo cp "$SCRIPT_DIR/99-nvidia-device-nodes.rules" /etc/udev/rules.d/
+    sudo udevadm control --reload-rules
+    echo "udev rule installed for persistent GPU nodes"
+fi
 nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
 
 # 2. ALSA utils for audio diagnostics

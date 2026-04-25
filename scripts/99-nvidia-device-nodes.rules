@@ -1,0 +1,6 @@
+# /etc/udev/rules.d/99-nvidia-device-nodes.rules
+# Create persistent NVIDIA device nodes after driver module loads
+# Without this, /dev/nvidia0 and /dev/nvidiactl vanish on reboot (/dev is tmpfs)
+
+ACTION=="add", DEVPATH=="/module/nvidia", RUN+="/usr/bin/mknod -m 666 /dev/nvidia0 c 195 0"
+ACTION=="add", DEVPATH=="/module/nvidia", RUN+="/usr/bin/mknod -m 666 /dev/nvidiactl c 195 255"
