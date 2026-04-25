@@ -5,7 +5,7 @@ WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# Install Python, audio runtime/dev libraries, and compiler toolchain.
+# Install Python, audio runtime/dev libraries, vision libraries, and compiler toolchain.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
     python3 \
@@ -27,6 +27,10 @@ RUN apt-get update \
     libsndfile1 \
     libsndfile1-dev \
     ffmpeg \
+    libgl1 \
+    libglib2.0-0 \
+    libv4l-dev \
+    v4l-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies

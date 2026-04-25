@@ -5,6 +5,8 @@ import time
 import socket
 import numpy as np
 import scipy as sp
+import torch
+import cv2
 import sounddevice as sd
 import soundfile as sf
 import queue
@@ -54,6 +56,13 @@ def runStartupPreflight():
         print(f"HTTPS check: huggingface.co reachable (status={response.status_code})")
     except Exception as err:
         print(f"WARNING: HTTPS check failed for huggingface.co: {err}")
+
+    # Camera device visibility
+    videoDevices = glob.glob('/dev/video*')
+    if videoDevices:
+        print(f"V4L2 video devices found: {len(videoDevices)} ({', '.join(sorted(videoDevices))})")
+    else:
+        print("WARNING: No /dev/video* devices found. Mount camera with: --device /dev/video0:/dev/video0")
 
     print("=== Preflight complete ===")
 
@@ -159,8 +168,56 @@ def selectBestMicrophone(allMicrophones):
     # 3. Fallback: return the first device
     return allMicrophones[0]
 
+def listCameras():
+    """Return available cameras as dictionaries of index, width, height via V4L2"""
+    allCameras = []
+    videoDevices = sorted(glob.glob('/dev/video*'))
+    for device in videoDevices:
+        index = int(device.replace('/dev/video', ''))
+        with suppressStdOut():
+            camera = cv2.VideoCapture(index, cv2.CAP_V4L2)
+            if camera.isOpened():
+                success, frame = camera.read()
+                if success and frame is not None:
+                    allCameras.append({
+                        "Index": index,
+                        "Width": int(camera.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                        "Height": int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    })
+                camera.release()
+    return allCameras or None
+
+def selectBestCamera(allCameras):
+    """Select highest resolution camera, or first available."""
+    if not allCameras:
+        return None
+    return sorted(allCameras, key=lambda c: c["Width"] * c["Height"], reverse=True)[0]
+
 def initialize():
-    global  MICROPHONE_INDEX, MICROPHONE_SAMPLERATE, SPEECH_MODEL
+    global GPU, CAMERA, MICROPHONE_INDEX, MICROPHONE_SAMPLERATE, SPEECH_MODEL
+    global VISION_MODEL, VISION_PROCESSOR, LLM_TOKENIZER, LLM_MODEL
+
+    # GPU
+    with printVerbosely("Check CUDA availability"):
+        GPU = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+        print(f"Using device: {GPU}")
+
+    # CAMERA
+    with printVerbosely("Prepare camera"):
+        allCameras = listCameras()
+        if allCameras:
+            bestCamera = selectBestCamera(allCameras)
+            cameraIndex = int(bestCamera["Index"])
+            CAMERA = cv2.VideoCapture(cameraIndex, cv2.CAP_V4L2)
+            if CAMERA.isOpened():
+                CAMERA.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                print(f"Selected camera: /dev/video{cameraIndex} ({bestCamera['Width']}x{bestCamera['Height']})")
+            else:
+                print("WARNING: Camera found but could not open. Vision disabled.")
+                CAMERA = None
+        else:
+            print("WARNING: No camera found. Vision disabled — speech-only mode.")
+            CAMERA = None
 
     # MICROPHONE
     with printVerbosely("Prepare microphone"):
@@ -172,15 +229,32 @@ def initialize():
         MICROPHONE_INDEX = int(bestMicrophone["Index"])
         MICROPHONE_SAMPLERATE = int(bestMicrophone["SampleRate"])
 
-    # SPEECH MODEL
+    # VISION MODEL (Grounding-DINO)
+    if CAMERA is not None:
+        with printVerbosely("Load vision model: grounding-dino-base"):
+            from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+            modelId = "IDEA-Research/grounding-dino-base"
+            VISION_PROCESSOR = AutoProcessor.from_pretrained(modelId)
+            VISION_MODEL = AutoModelForZeroShotObjectDetection.from_pretrained(modelId).to(GPU)
+            VISION_MODEL.eval()
+    else:
+        VISION_MODEL = None
+        VISION_PROCESSOR = None
+
+    # LANGUAGE MODEL (Qwen — runs on CPU, small enough)
+    with printVerbosely("Load language model: qwen2.5-0.5b-instruct"):
+        from transformers import AutoTokenizer, AutoModelForCausalLM
+        llmId = "Qwen/Qwen2.5-0.5B-Instruct"
+        LLM_TOKENIZER = AutoTokenizer.from_pretrained(llmId)
+        LLM_MODEL = AutoModelForCausalLM.from_pretrained(llmId).to("cpu")
+        LLM_MODEL.eval()
+
+    # SPEECH MODEL (Parakeet — GPU if available)
     with printVerbosely("Load speech model: parakeet-tdt-0.6b-v2"):
-        #with suppressStdOut():
-            import torch
-            import nemo.collections.asr as nemo_asr
-            SPEECH_MODEL = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v2")
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            SPEECH_MODEL = SPEECH_MODEL.to(device)
-            print(f"Model loaded on: {device}")
+        import nemo.collections.asr as nemo_asr
+        SPEECH_MODEL = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v2")
+        SPEECH_MODEL = SPEECH_MODEL.to(GPU)
+        print(f"Speech model on: {GPU}")
 
 def makeSpeechCallback(utteranceQueue, minTalkingThreshold=10, maxSilenceThreshold=10, quietThreshold=0.01):
     from collections import deque
@@ -229,15 +303,119 @@ def transcribeSpeechCommand(speechModel, audio):
     """Transcribe one utterance audio buffer into text."""
     return speechModel.transcribe([audio], verbose=False)[0].text.strip()
 
+def extractObjectFromTranscription(fullText):
+    """Use Qwen to extract the searchable object phrase from transcribed speech."""
+    prompt = f"""You extract only the searchable object phrase from a spoken request.
+
+Rules:
+1) If a color is present, you MUST keep the color in the output.
+2) Never drop color words. "blue cube" must stay "blue cube", not "cube".
+3) Remove filler words like "show me", "can you", "please", "I want", "look for".
+4) Return a short noun phrase only, lowercase, with no punctuation.
+5) If no color is provided, return only the object words.
+
+Examples:
+- "show me the blue cube" -> "blue cube"
+- "can you find a red ball please" -> "red ball"
+- "look for the yellow toy car" -> "yellow toy car"
+- "find the cube" -> "cube"
+
+Sentence: {fullText}
+Output:"""
+
+    with torch.inference_mode():
+        inputs = LLM_TOKENIZER(prompt, return_tensors="pt")
+        inputs = {k: v.to("cpu") for k, v in inputs.items()}
+        outputs = LLM_MODEL.generate(**inputs, max_new_tokens=20, temperature=0.3)
+        response = LLM_TOKENIZER.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
+
+    response = response.split('\n')[0].strip()
+    return response if response else fullText
+
+def lookForObject(query, threshold=0.1):
+    """Capture a camera frame, detect objects matching query, return (x,y) center or None."""
+    if CAMERA is None or VISION_MODEL is None:
+        return None
+
+    knownColors = {"red": 0, "yellow": 30, "green": 60, "blue": 120}
+
+    def extractColorFromQuery(q):
+        for color in knownColors:
+            if color in q.lower():
+                return color
+        return None
+
+    def computeColorDistance(crop, targetColor):
+        cropHSL = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        cropAvgHue = float(np.mean(cropHSL[:, :, 0]))
+        return min(abs(cropAvgHue - targetColor), 180 - abs(cropAvgHue - targetColor))
+
+    # Discard buffered frames
+    CAMERA.grab()
+    CAMERA.grab()
+    CAMERA.grab()
+
+    success, frame = CAMERA.read()
+    if not success:
+        print("WARNING: Failed to read camera frame")
+        return None
+
+    frameRGB = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    frameH, frameW = frame.shape[:2]
+
+    # Object detection via Grounding-DINO
+    inputs = VISION_PROCESSOR(images=frameRGB, text=query, return_tensors="pt")
+    inputs = {k: (v.to(GPU) if isinstance(v, torch.Tensor) else v) for k, v in inputs.items()}
+    with torch.inference_mode():
+        outputs = VISION_MODEL(**inputs)
+
+    targetSizes = torch.tensor([frameRGB.shape[:2]], device=GPU)
+    results = VISION_PROCESSOR.post_process_grounded_object_detection(
+        outputs, target_sizes=targetSizes, threshold=threshold
+    )[0]
+
+    detections = []
+    for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
+        x1, y1, x2, y2 = box.int().tolist()
+        x1, x2 = max(0, x1), min(frameW - 1, x2)
+        y1, y2 = max(0, y1), min(frameH - 1, y2)
+        if x2 <= x1 or y2 <= y1:
+            continue
+        boxArea = (x2 - x1) * (y2 - y1)
+        if boxArea > 0.5 * frameH * frameW:
+            continue
+        # Center crop for color detection
+        bw, bh = x2 - x1, y2 - y1
+        cx1, cx2 = x1 + bw // 4, x1 + (bw * 3) // 4
+        cy1, cy2 = y1 + bh // 4, y1 + (bh * 3) // 4
+        crop = frame[cy1:cy2, cx1:cx2]
+        if crop.size == 0:
+            continue
+        detections.append({"score": float(score), "label": label, "box": (x1, y1, x2, y2), "crop": crop})
+
+    if not detections:
+        return None
+
+    queryColor = extractColorFromQuery(query)
+    if queryColor is None:
+        bestDetection = max(detections, key=lambda d: d["score"])
+    else:
+        for det in detections:
+            det["colorDistance"] = computeColorDistance(det["crop"], knownColors[queryColor])
+        bestDetection = min(detections, key=lambda d: d["colorDistance"])
+
+    x1, y1, x2, y2 = bestDetection["box"]
+    centerX, centerY = (x1 + x2) // 2, (y1 + y2) // 2
+    print(f"  Detected '{bestDetection['label']}' at ({centerX}, {centerY}) confidence={bestDetection['score']:.2f}")
+    return (centerX, centerY)
+
 
 def transitionToListeningState():
     global state, query, lookUntil
 
     state = STATE_LISTENING
-    print("Right now I am ... "+state)
+    print("Listening...")
     lookUntil = 0.0
-
-    # Clean up
     query = None
 
 
@@ -245,28 +423,34 @@ def transitionToLookingState():
     global state, query, lookUntil
 
     state = STATE_LOOKING
-    print(f"Right now I am ... "+state)
+    print(f"Looking for: '{query}'...")
     lookUntil = time.time() + 10.0
 
 ################## MAIN CODE ##################
 
 GPU = None
 
+# Vision
+CAMERA = None
+VISION_MODEL = None
+VISION_PROCESSOR = None
+
+# Language
+LLM_TOKENIZER = None
+LLM_MODEL = None
 
 # Speech
-
 MICROPHONE_INDEX = None
 MICROPHONE_SAMPLERATE = None
 SPEECH_MODEL = None
 
 runStartupPreflight()
-initialize() # Assigns all the global variables above
+initialize()
 
 utteranceQueue = queue.Queue()
 SPEECH_CALLBACK = makeSpeechCallback(utteranceQueue)
 
 # State
-
 STATE_LISTENING = "LISTENING"
 STATE_LOOKING = "LOOKING"
 
@@ -284,23 +468,29 @@ with sd.InputStream(device=MICROPHONE_INDEX, channels=1, samplerate=MICROPHONE_S
             now = time.time()
             if state == STATE_LISTENING:
                 try:
-                    # If we have a new utterance, transcribe and switch to looking
                     utteranceAudio = utteranceQueue.get_nowait()
-                    print("I have an utterance: ", utteranceAudio)
                     fullText = transcribeSpeechCommand(SPEECH_MODEL, utteranceAudio)
                     if fullText:
                         print(f"Heard: '{fullText}'")
-                        #transitionToLookingState()
+                        extractedObject = extractObjectFromTranscription(fullText)
+                        print(f"Interpreted: '{extractedObject}'")
+                        query = extractedObject
+                        transitionToLookingState()
                 except queue.Empty:
                     pass
 
             elif state == STATE_LOOKING:
-                # If it's been 10 seconds, go back to listening
                 if now >= lookUntil:
                     transitionToListeningState()
-                # If we have a query, use the camera to look for it
-                sd.sleep(50)
+                elif query:
+                    result = lookForObject(query)
+                    if result:
+                        print(f"Found at (x, y) = {result}")
+
+            sd.sleep(50)
     except KeyboardInterrupt:
         print("Stopping...")
     finally:
-        print("Entered Finally and now Stopping...")
+        if CAMERA is not None:
+            CAMERA.release()
+        print("Cleanup complete.")

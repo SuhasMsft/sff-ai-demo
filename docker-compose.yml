@@ -9,8 +9,11 @@ services:
     runtime: nvidia
     devices:
       - /dev/snd:/dev/snd
+      - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
     group_add:
       - audio
+      - video
     volumes:
       - /var/cache/hf-models:/hf-cache
     environment:
