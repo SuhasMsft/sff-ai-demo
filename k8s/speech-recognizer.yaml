@@ -55,6 +55,8 @@ spec:
         image: localhost:5000/mic-access:latest
         imagePullPolicy: Always
         command: ["python3", "access_mic.py"]
+        tty: true
+        stdin: true
         env:
         - name: HF_HOME
           value: /cache/huggingface
@@ -73,11 +75,26 @@ spec:
             memory: "12Gi"
             cpu: "4"
             nvidia.com/gpu: 1
+        startupProbe:
+          exec:
+            command: ["python3", "-c", "import torch; assert torch.cuda.is_available()"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 18
+        livenessProbe:
+          exec:
+            command: ["python3", "-c", "import os; assert os.path.exists('/dev/snd')"]
+          periodSeconds: 60
+          failureThreshold: 3
         volumeMounts:
         - name: hf-cache
           mountPath: /cache/huggingface
         - name: snd
           mountPath: /dev/snd
+        - name: video0
+          mountPath: /dev/video0
+        - name: video1
+          mountPath: /dev/video1
         securityContext:
           privileged: true
       volumes:
@@ -88,6 +105,14 @@ spec:
         hostPath:
           path: /dev/snd
           type: Directory
+      - name: video0
+        hostPath:
+          path: /dev/video0
+          type: CharDevice
+      - name: video1
+        hostPath:
+          path: /dev/video1
+          type: CharDevice
       tolerations:
       - key: nvidia.com/gpu
         operator: Exists

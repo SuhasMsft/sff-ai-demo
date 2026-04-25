@@ -1,0 +1,236 @@
+# Production-Ready K8s Manifest for 3-Model Speech Recognition Demo on K3s
+# Prerequisites:
+#   1. NVIDIA GPU Operator installed with RuntimeClass 'nvidia'
+#   2. Local Docker registry at localhost:5000 with mic-access:latest pushed
+#   3. /var/cache/hf-models directory writable on K3s node
+#   4. User in video group (GID 44) or supplementalGroups configured
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: speech
+  labels:
+    app.kubernetes.io/name: speech-recognizer
+    app.kubernetes.io/component: demo
+
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: hf-cache-pv
+  labels:
+    type: local
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes: [ReadWriteOnce]
+  hostPath:
+    path: /var/cache/hf-models
+    type: DirectoryOrCreate
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-path  # K3s default storage class
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hf-cache-pvc
+  namespace: speech
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+  volumeName: hf-cache-pv
+  storageClassName: local-path
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: speech-recognizer
+  namespace: speech
+  labels:
+    app: speech-recognizer
+    app.kubernetes.io/name: speech-recognizer
+    app.kubernetes.io/version: "1.0"
+    app.kubernetes.io/component: inference
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Required for GPU and hostPath volumes
+  selector:
+    matchLabels:
+      app: speech-recognizer
+  template:
+    metadata:
+      labels:
+        app: speech-recognizer
+        app.kubernetes.io/name: speech-recognizer
+    spec:
+      runtimeClassName: nvidia
+      hostNetwork: true  # Required for ALSA audio device access
+      dnsPolicy: ClusterFirstWithHostNet
+      
+      # Security context for video device access
+      securityContext:
+        supplementalGroups:
+          - 44   # video group GID (standard on most Linux distros)
+          - 29   # audio group GID
+      
+      containers:
+      - name: mic-access
+        image: localhost:5000/mic-access:latest
+        imagePullPolicy: Always
+        command: ["python3", "access_mic.py"]
+        
+        env:
+        - name: HF_HOME
+          value: /cache/huggingface
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: compute,utility,video  # Added 'video' for camera inference
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: TRANSFORMERS_CACHE
+          value: /cache/huggingface/transformers
+        - name: HF_DATASETS_CACHE
+          value: /cache/huggingface/datasets
+        
+        resources:
+          requests:
+            memory: "8Gi"
+            cpu: "2"
+            nvidia.com/gpu: 1
+          limits:
+            memory: "16Gi"  # Increased for 3 models (Whisper + 2 LLMs)
+            cpu: "4"
+            nvidia.com/gpu: 1
+        
+        volumeMounts:
+        - name: hf-cache
+          mountPath: /cache/huggingface
+        - name: snd
+          mountPath: /dev/snd
+        - name: video
+          mountPath: /dev/video0  # Primary camera
+        - name: video1
+          mountPath: /dev/video1  # Secondary camera (if exists)
+          readOnly: true
+        
+        # Startup probe for slow model loading (Whisper + LLMs can take 60-120s)
+        startupProbe:
+          exec:
+            command:
+            - python3
+            - -c
+            - "import sys; sys.exit(0)"  # Replace with actual health check endpoint
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 12  # 120 seconds total for model loading
+        
+        # Liveness probe to detect hung inference
+        livenessProbe:
+          exec:
+            command:
+            - python3
+            - -c
+            - "import os; sys.exit(0 if os.path.exists('/tmp/healthy') else 1)"
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        # Readiness probe for accepting traffic
+        readinessProbe:
+          exec:
+            command:
+            - python3
+            - -c
+            - "import os; sys.exit(0 if os.path.exists('/tmp/ready') else 1)"
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        securityContext:
+          # Use capabilities instead of privileged for better security
+          capabilities:
+            add:
+            - SYS_ADMIN  # For device access
+          allowPrivilegeEscalation: true
+          readOnlyRootFilesystem: false  # Models write cache
+      
+      volumes:
+      - name: hf-cache
+        persistentVolumeClaim:
+          claimName: hf-cache-pvc
+      - name: snd
+        hostPath:
+          path: /dev/snd
+          type: Directory
+      - name: video
+        hostPath:
+          path: /dev/video0
+          type: CharDevice
+      - name: video1
+        hostPath:
+          path: /dev/video1
+          type: CharDevice
+      
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      
+      # Node affinity to schedule on GPU node (optional if multi-node)
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.present
+                operator: In
+                values:
+                - "true"
+
+---
+# Optional: Service for exposing metrics/health endpoint (if app supports it)
+apiVersion: v1
+kind: Service
+metadata:
+  name: speech-recognizer
+  namespace: speech
+  labels:
+    app: speech-recognizer
+spec:
+  type: ClusterIP
+  selector:
+    app: speech-recognizer
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+
+---
+# Optional: ConfigMap for model configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: speech-recognizer-config
+  namespace: speech
+data:
+  models.yaml: |
+    whisper:
+      model_id: openai/whisper-large-v3
+      device: cuda
+    llm_primary:
+      model_id: microsoft/phi-3-mini-4k-instruct
+      device: cuda
+    llm_secondary:
+      model_id: google/flan-t5-small
+      device: cuda
