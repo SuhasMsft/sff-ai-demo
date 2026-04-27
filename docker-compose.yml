@@ -15,7 +15,7 @@ services:
       - audio
       - video
     volumes:
-      - /var/cache/hf-models:/hf-cache
+      - /acsa/hf-models:/hf-cache
     environment:
       - PYTHONUNBUFFERED=1
       - HF_HOME=/hf-cache

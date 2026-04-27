@@ -12,7 +12,7 @@ spec:
     storage: 20Gi
   accessModes: [ReadWriteOnce]
   hostPath:
-    path: /var/cache/hf-models
+    path: /acsa/hf-models
     type: DirectoryOrCreate
   persistentVolumeReclaimPolicy: Retain
 ---

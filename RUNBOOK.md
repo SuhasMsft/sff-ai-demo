@@ -30,7 +30,7 @@ sudo docker tag mic-access:latest localhost:5000/mic-access:latest
 sudo docker push localhost:5000/mic-access:latest
 
 # 5. Prefetch models (inside container)
-sudo docker run --rm -v /var/cache/hf-models:/hf-cache -e HF_HOME=/hf-cache --network host mic-access:latest python3 -c "
+sudo docker run --rm -v /acsa/hf-models:/hf-cache -e HF_HOME=/hf-cache --network host mic-access:latest python3 -c "
 import nemo.collections.asr as nemo_asr; nemo_asr.models.ASRModel.from_pretrained('nvidia/parakeet-tdt-0.6b-v2')
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection, AutoTokenizer, AutoModelForCausalLM
 AutoProcessor.from_pretrained('IDEA-Research/grounding-dino-base'); AutoModelForZeroShotObjectDetection.from_pretrained('IDEA-Research/grounding-dino-base')
@@ -300,10 +300,10 @@ tail -5 /tmp/docker-build.log  # Check result
 sudo docker run -d -p 5000:5000 --restart=always --name registry registry:2 2>/dev/null || true
 
 # Then prefetch all 3 models using the container's Python environment
-sudo mkdir -p /var/cache/hf-models && sudo chmod 777 /var/cache/hf-models
+sudo mkdir -p /acsa/hf-models && sudo chmod 777 /acsa/hf-models
 
 sudo docker run --rm \
-    -v /var/cache/hf-models:/hf-cache \
+    -v /acsa/hf-models:/hf-cache \
     -e HF_HOME=/hf-cache \
     --network host \
     mic-access:latest \
@@ -324,7 +324,7 @@ print('All 3 models cached successfully')
 
 ### 3.4 Verify cache
 ```bash
-du -sh /var/cache/hf-models/
+du -sh /acsa/hf-models/
 # Expected: ~5-6 GB
 ```
 
@@ -502,7 +502,7 @@ sudo k3s ctr images rm docker.io/library/mic-access:latest
 sudo docker rmi mic-access:latest localhost:5000/mic-access:latest 2>/dev/null
 
 # Optional: clean model cache (saves ~5GB disk)
-sudo rm -rf /var/cache/hf-models/*
+sudo rm -rf /acsa/hf-models/*
 ```
 
 ---

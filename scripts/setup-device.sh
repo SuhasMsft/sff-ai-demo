@@ -32,8 +32,8 @@ fi
 
 # 4. Disk-backed HuggingFace cache (NOT tmpfs!)
 echo "[4/7] Creating disk-backed model cache..."
-sudo mkdir -p /var/cache/hf-models
-sudo chmod 777 /var/cache/hf-models
+sudo mkdir -p /acsa/hf-models
+sudo chmod 777 /acsa/hf-models
 
 # 5. cert-manager (required for Foundry Local)
 echo "[5/7] Installing cert-manager..."

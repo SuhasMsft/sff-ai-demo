@@ -176,7 +176,7 @@ elapsed
 
 # ─── STEP 5: SETUP + CACHE ─────────────────────────────────
 STEP=5; log "DEVICE SETUP"
-sudo mkdir -p /var/cache/hf-models && sudo chmod 777 /var/cache/hf-models
+sudo mkdir -p /acsa/hf-models && sudo chmod 777 /acsa/hf-models
 sudo tdnf install -y alsa-utils 2>/dev/null || true
 pass "Cache dir + alsa-utils ready"
 elapsed
@@ -215,33 +215,31 @@ elapsed
 
 # ─── STEP 8: PREFETCH MODELS ───────────────────────────────
 STEP=8; log "PREFETCH AI MODELS"
-CACHE_SIZE=$(du -sm /var/cache/hf-models/ 2>/dev/null | awk '{print $1}')
+CACHE_SIZE=$(du -sm /acsa/hf-models/ 2>/dev/null | awk '{print $1}')
 if [ "${CACHE_SIZE:-0}" -gt 3000 ] && [ "$SKIP_PREFETCH" = false ]; then
     pass "Models already cached (${CACHE_SIZE}MB) — skipping"
 elif [ "$SKIP_PREFETCH" = true ]; then
     warn "Skipped (--skip-prefetch flag)"
 else
-    log "Downloading 3 models (~5GB total)..."
-    sudo docker run --rm \
-        -v /var/cache/hf-models:/hf-cache \
-        -e HF_HOME=/hf-cache \
-        --network host \
-        mic-access:latest \
-        python3 -c "
-import nemo.collections.asr as nemo_asr
-print('Downloading Parakeet TDT 0.6B...')
-nemo_asr.models.ASRModel.from_pretrained('nvidia/parakeet-tdt-0.6b-v2')
-from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection, AutoTokenizer, AutoModelForCausalLM
-print('Downloading Grounding-DINO...')
-AutoProcessor.from_pretrained('IDEA-Research/grounding-dino-base')
-AutoModelForZeroShotObjectDetection.from_pretrained('IDEA-Research/grounding-dino-base')
-print('Downloading Qwen 2.5...')
-AutoTokenizer.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct')
-AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct')
-print('All 3 models cached')
-" 2>&1 | grep -E 'Downloading|cached|Error' | tee -a "$LOG"
-    CACHE_SIZE=$(du -sm /var/cache/hf-models/ 2>/dev/null | awk '{print $1}')
-    pass "Models cached (${CACHE_SIZE}MB)"
+    log "Downloading 3 models (~5GB total) to /acsa (228GB free)..."
+    log "Models download one at a time with memory limits to keep device responsive."
+
+    # Download each model separately with memory limits to prevent SSH dropout
+    for MODEL_CMD in \
+        "import nemo.collections.asr as nemo_asr; print('Downloading Parakeet...'); nemo_asr.models.ASRModel.from_pretrained('nvidia/parakeet-tdt-0.6b-v2'); print('Parakeet done')" \
+        "from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection; print('Downloading DINO...'); AutoProcessor.from_pretrained('IDEA-Research/grounding-dino-base'); AutoModelForZeroShotObjectDetection.from_pretrained('IDEA-Research/grounding-dino-base'); print('DINO done')" \
+        "from transformers import AutoTokenizer, AutoModelForCausalLM; print('Downloading Qwen...'); AutoTokenizer.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct'); AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct'); print('Qwen done')"
+    do
+        sudo docker run --rm \
+            --memory=6g --cpus=2 \
+            -v /acsa/hf-models:/hf-cache \
+            -e HF_HOME=/hf-cache \
+            --network host \
+            mic-access:latest \
+            python3 -c "$MODEL_CMD" 2>&1 | grep -E 'Downloading|done|Error' | tee -a "$LOG"
+    done
+    CACHE_SIZE=$(du -sm /acsa/hf-models/ 2>/dev/null | awk '{print $1}')
+    pass "Models cached (${CACHE_SIZE}MB) on /acsa"
 fi
 elapsed
 

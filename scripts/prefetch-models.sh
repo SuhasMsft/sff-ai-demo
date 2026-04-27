@@ -3,7 +3,7 @@
 # Run BEFORE starting containers to avoid runtime download delays
 set -euo pipefail
 
-CACHE_DIR="${HF_HOME:-/var/cache/hf-models}"
+CACHE_DIR="${HF_HOME:-/acsa/hf-models}"
 echo "=== Pre-fetching models to $CACHE_DIR ==="
 
 sudo mkdir -p "$CACHE_DIR"

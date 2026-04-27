@@ -19,7 +19,7 @@ How to run the speech container as a K3s pod instead of standalone Docker.
 1. GPU Operator or NVIDIA device plugin installed
 2. `nvidia` RuntimeClass created
 3. Local registry running at `localhost:5000`
-4. `/var/cache/hf-models` directory created
+4. `/acsa/hf-models` directory created
 
 ## Deploy
 
@@ -46,7 +46,7 @@ K3s Cluster
 │       ├── nvidia.com/gpu: 1
 │       ├── memory: 8Gi limit
 │       ├── cpus: 4 limit
-│       └── PVC → /var/cache/hf-models
+│       └── PVC → /acsa/hf-models
 ├── foundry-local-operator namespace (future)
 │   └── inference-operator
 ├── cert-manager namespace
