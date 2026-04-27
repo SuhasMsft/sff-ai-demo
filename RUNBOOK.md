@@ -3,24 +3,34 @@
 > **Audience**: Any engineer with SSH access to an Azure Local SFF device.
 > **Repo**: https://github.com/SuhasMsft/sff-ai-demo
 > **Time**: ~60-90 min (first deploy), ~10 min (redeploy)
+> **All sections are idempotent** — safe to re-run if interrupted.
 
 ---
 
 ## Quick Start (experienced users)
 
+> ⚠️ **Assumes GPU device nodes and nvidia-container-toolkit already configured.**
+> If this is a fresh device, start at Section 0 instead.
+
 ```bash
 # 1. SSH into device
 az ssh arc --subscription <SUB_ID> --resource-group <RG> --name <ARC_MACHINE> --local-user clouduser --private-key-file ~/.ssh/<KEY>.pem -- -o StrictHostKeyChecking=no
 
-# 2. Clone + setup
+# 2. Verify GPU + K3s (fail fast if not ready)
+nvidia-smi >/dev/null 2>&1 && sudo k3s kubectl get runtimeclass nvidia >/dev/null 2>&1 && echo "GPU + K3s OK" || { echo "FAIL: Run Sections 1-2 first"; exit 1; }
+
+# 3. Clone + setup
 git clone https://github.com/SuhasMsft/sff-ai-demo.git && cd sff-ai-demo
 chmod +x scripts/*.sh && sudo ./scripts/setup-device.sh
 
-# 3. Build + import image (no Docker needed)
-sudo docker build -t mic-access:latest . && sudo docker tag mic-access:latest localhost:5000/mic-access:latest && sudo docker push localhost:5000/mic-access:latest
+# 4. Build image + push to local registry
+sudo docker run -d -p 5000:5000 --restart=always --name registry registry:2 2>/dev/null || true
+sudo docker build -t mic-access:latest .
+sudo docker tag mic-access:latest localhost:5000/mic-access:latest
+sudo docker push localhost:5000/mic-access:latest
 
-# 4. Prefetch models (inside container, avoids host Python deps)
-sudo docker run --rm -v /var/cache/hf-models:/hf-cache -e HF_HOME=/hf-cache --runtime=nvidia --gpus all mic-access:latest python3 -c "
+# 5. Prefetch models (inside container)
+sudo docker run --rm -v /var/cache/hf-models:/hf-cache -e HF_HOME=/hf-cache --network host mic-access:latest python3 -c "
 import nemo.collections.asr as nemo_asr; nemo_asr.models.ASRModel.from_pretrained('nvidia/parakeet-tdt-0.6b-v2')
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection, AutoTokenizer, AutoModelForCausalLM
 AutoProcessor.from_pretrained('IDEA-Research/grounding-dino-base'); AutoModelForZeroShotObjectDetection.from_pretrained('IDEA-Research/grounding-dino-base')
@@ -28,7 +38,7 @@ AutoTokenizer.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct'); AutoModelForCausalL
 print('All models cached successfully')
 "
 
-# 5. Deploy to K3s
+# 6. Deploy to K3s
 sudo k3s kubectl apply -f k8s/speech-recognizer.yaml && sudo k3s kubectl -n speech rollout status deployment/speech-recognizer --timeout=300s
 ```
 
@@ -36,13 +46,13 @@ sudo k3s kubectl apply -f k8s/speech-recognizer.yaml && sudo k3s kubectl -n spee
 
 ## Section 0: Prerequisites Check
 
-Run this preflight block — all 8 checks must pass:
+Run this preflight block — all checks must pass:
 
 ```bash
 echo "=== SFF AI Demo Preflight ==="
 
 # 1. Arc connectivity
-echo -n "Arc agent: "; sudo azcmagent show 2>/dev/null | grep -oP 'Agent Status\s*:\s*\K.*' || echo "NOT FOUND"
+echo -n "Arc agent: "; sudo azcmagent show 2>/dev/null | grep -E 'Agent Status' | awk -F: '{print $2}' || echo "NOT FOUND"
 
 # 2. K3s cluster
 echo -n "K3s node: "; sudo k3s kubectl get nodes --no-headers 2>/dev/null | awk '{print $1, $2}' || echo "NOT RUNNING"
@@ -50,19 +60,22 @@ echo -n "K3s node: "; sudo k3s kubectl get nodes --no-headers 2>/dev/null | awk 
 # 3. GPU hardware
 echo -n "NVIDIA GPU: "; lspci | grep -i nvidia | head -1 || echo "NOT FOUND"
 
-# 4. GPU driver
-echo -n "nvidia-smi: "; nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null || echo "FAILED"
+# 4. GPU driver (if fails → Section 1)
+echo -n "nvidia-smi: "; nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null || echo "FAILED → run Section 1"
 
-# 5. Audio devices
+# 5. nvidia RuntimeClass (if fails → Section 2)
+echo -n "RuntimeClass: "; sudo k3s kubectl get runtimeclass nvidia --no-headers 2>/dev/null | awk '{print $1}' || echo "MISSING → run Section 2"
+
+# 6. Audio devices
 echo -n "Audio: "; ls /dev/snd/pcmC*c 2>/dev/null | wc -l | xargs -I{} echo "{} capture devices" || echo "NONE"
 
-# 6. Camera (optional)
+# 7. Camera (optional — speech-only mode if absent)
 echo -n "Camera: "; ls /dev/video* 2>/dev/null | wc -l | xargs -I{} echo "{} video devices" || echo "NONE (speech-only mode)"
 
-# 7. Internet
+# 8. Internet
 echo -n "Internet: "; curl -so/dev/null -w'%{http_code}' https://huggingface.co 2>/dev/null || echo "OFFLINE"
 
-# 8. Disk space
+# 9. Disk space
 echo -n "Disk free: "; df -h / | awk 'NR==2{print $4, "available"}'
 
 echo "=== Preflight Complete ==="
@@ -70,23 +83,27 @@ echo "=== Preflight Complete ==="
 
 **Expected output** (all green):
 ```
-Arc agent: Connected
+Arc agent:  Connected
 K3s node: 651441a2-... Ready
 NVIDIA GPU: NVIDIA Corporation Device 28b0 (rev a1)
 nvidia-smi: NVIDIA RTX 2000E Ada Generation, 580.105.08
+RuntimeClass: nvidia
 Audio: 1 capture devices
 Camera: 2 video devices       (or "NONE (speech-only mode)" — OK)
 Internet: 200
 Disk free: 23G available
 ```
 
-**If nvidia-smi fails** → go to Section 1.
+**If nvidia-smi says FAILED** → go to Section 1.
+**If RuntimeClass says MISSING** → go to Section 2.
 **If K3s not running** → `sudo systemctl restart k3s`
 **If Arc disconnected** → `sudo azcmagent connect` or check network.
 
 ---
 
 ## Section 1: GPU Setup
+
+> **Skip check**: `nvidia-smi >/dev/null 2>&1 && echo "Section 1 already done — skip to Section 2"`
 
 ### 1.1 Check kernel modules
 ```bash
@@ -125,6 +142,8 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 ---
 
 ## Section 2: NVIDIA Container Toolkit + K3s GPU
+
+> **Skip check**: `sudo k3s kubectl get runtimeclass nvidia >/dev/null 2>&1 && echo "Section 2 already done — skip to Section 3"`
 
 ### 2.1 Install nvidia-container-toolkit
 
@@ -169,6 +188,7 @@ nvidia-ctk --version
 
 ```bash
 # Restart K3s — it auto-detects nvidia-container-runtime if in PATH
+# ⚠️ This briefly disrupts all pods on this node
 sudo systemctl restart k3s
 sleep 10
 
@@ -238,16 +258,18 @@ spec:
         nvidia.com/gpu: 1
 EOF
 
-# Wait and check
+# Wait for completion (non-interactive, Arc SSH safe)
 sleep 30
-sudo k3s kubectl logs gpu-test
+sudo k3s kubectl logs gpu-test 2>/dev/null || echo "Pod not ready yet — wait and retry"
 # Expected: Shows your GPU name + driver version
-sudo k3s kubectl delete pod gpu-test
+sudo k3s kubectl delete pod gpu-test --ignore-not-found
 ```
 
 ---
 
 ## Section 3: Clone Repo + Setup
+
+> **Skip check**: `ls ~/sff-ai-demo/access_mic.py >/dev/null 2>&1 && echo "Section 3 already done — skip to Section 4"`
 
 ### 3.1 Clone
 ```bash
@@ -267,8 +289,15 @@ This installs: GPU device nodes + udev rule, alsa-utils, Helm, cert-manager, dis
 ### 3.3 Pre-download models (inside container — avoids host Python deps)
 ```bash
 # First build the image (needed for prefetch)
-sudo docker build -t mic-access:latest .
 # NOTE: First build takes 20-45 minutes. This is normal.
+# For Arc SSH: use nohup to prevent timeout on long builds
+nohup sudo docker build -t mic-access:latest . > /tmp/docker-build.log 2>&1 &
+echo "Building... tail -f /tmp/docker-build.log to watch progress"
+wait  # Wait for build to finish
+tail -5 /tmp/docker-build.log  # Check result
+
+# Start local registry if not running
+sudo docker run -d -p 5000:5000 --restart=always --name registry registry:2 2>/dev/null || true
 
 # Then prefetch all 3 models using the container's Python environment
 sudo mkdir -p /var/cache/hf-models && sudo chmod 777 /var/cache/hf-models
