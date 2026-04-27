@@ -47,7 +47,7 @@ spec:
         - name: MKL_NUM_THREADS
           value: "4"
         - name: LD_LIBRARY_PATH
-          value: /usr/lib/x86_64-linux-gnu
+          value: /host-nvidia-libs:/usr/local/lib/python3.12/dist-packages/torch/lib
         resources:
           requests:
             memory: "8Gi"
@@ -67,13 +67,13 @@ spec:
         - name: nvidia-uvm
           mountPath: /dev/nvidia-uvm
         - name: libcuda
-          mountPath: /usr/lib/x86_64-linux-gnu/libcuda.so.1
+          mountPath: /host-nvidia-libs/libcuda.so.1
           readOnly: true
         - name: libcuda-so
-          mountPath: /usr/lib/x86_64-linux-gnu/libcuda.so
+          mountPath: /host-nvidia-libs/libcuda.so
           readOnly: true
         - name: libnvidia-ml
-          mountPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1
+          mountPath: /host-nvidia-libs/libnvidia-ml.so.1
           readOnly: true
         securityContext:
           privileged: true
