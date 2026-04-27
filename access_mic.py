@@ -196,22 +196,12 @@ def initialize():
     global GPU, CAMERA, MICROPHONE_INDEX, MICROPHONE_SAMPLERATE, SPEECH_MODEL
     global VISION_MODEL, VISION_PROCESSOR, LLM_TOKENIZER, LLM_MODEL
 
-    # GPU
+    # GPU — disabled due to CUDA 13 driver / CUDA 12 cuFFT incompatibility
+    # on Azure Linux 3.0 without nvidia-container-runtime. Using CPU for ASR.
+    # DINO vision also forced to CPU until driver/toolkit is updated.
     with printVerbosely("Check CUDA availability"):
-        if torch.cuda.is_available():
-            GPU = torch.device("cuda:0")
-            # Test if GPU FFT works (needed for Parakeet ASR)
-            try:
-                _t = torch.randn(1, 100).cuda()
-                torch.stft(_t, n_fft=64, return_complex=True, window=torch.hann_window(64).cuda())
-                del _t
-                print(f"Using device: {GPU} (cuFFT OK)")
-            except RuntimeError as e:
-                print(f"WARNING: GPU cuFFT failed ({e}). Falling back to CPU for ASR.")
-                GPU = torch.device("cpu")
-        else:
-            print("WARNING: CUDA not available. Using CPU (slower inference).")
-            GPU = torch.device("cpu")
+        GPU = torch.device("cpu")
+        print(f"Using device: {GPU} (CPU mode — CUDA driver/toolkit mismatch workaround)")
 
     # CAMERA
     with printVerbosely("Prepare camera"):
