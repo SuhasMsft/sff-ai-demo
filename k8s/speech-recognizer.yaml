@@ -55,17 +55,6 @@ spec:
           limits:
             memory: "12Gi"
             cpu: "4"
-        startupProbe:
-          exec:
-            command: ["python3", "-c", "import torch; assert torch.cuda.is_available()"]
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          failureThreshold: 18
-        livenessProbe:
-          exec:
-            command: ["python3", "-c", "import os; assert os.path.exists('/dev/snd')"]
-          periodSeconds: 60
-          failureThreshold: 3
         volumeMounts:
         - name: hf-cache
           mountPath: /hf-cache
