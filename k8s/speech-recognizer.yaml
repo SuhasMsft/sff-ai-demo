@@ -22,15 +22,14 @@ spec:
       labels:
         app: speech-recognizer
     spec:
-      runtimeClassName: nvidia
+      # NOTE: runtimeClassName: nvidia removed — Azure Linux 1.17.8 toolkit has
+      # broken nvidia-container-runtime-hook. Using privileged + device mounts instead.
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       containers:
       - name: mic-access
         image: localhost:5000/mic-access:latest
         imagePullPolicy: Always
-        # FALLBACK (no registry): image: docker.io/library/mic-access:latest
-        # FALLBACK (no registry): imagePullPolicy: Never
         command: ["python3", "access_mic.py"]
         tty: true
         stdin: true
@@ -47,15 +46,15 @@ spec:
           value: "4"
         - name: MKL_NUM_THREADS
           value: "4"
+        - name: LD_LIBRARY_PATH
+          value: /usr/lib64
         resources:
           requests:
             memory: "8Gi"
             cpu: "2"
-            nvidia.com/gpu: 1
           limits:
             memory: "12Gi"
             cpu: "4"
-            nvidia.com/gpu: 1
         startupProbe:
           exec:
             command: ["python3", "-c", "import torch; assert torch.cuda.is_available()"]
@@ -72,8 +71,12 @@ spec:
           mountPath: /hf-cache
         - name: snd
           mountPath: /dev/snd
-        - name: video0
-          mountPath: /dev/video0
+        - name: nvidia0
+          mountPath: /dev/nvidia0
+        - name: nvidiactl
+          mountPath: /dev/nvidiactl
+        - name: nvidia-uvm
+          mountPath: /dev/nvidia-uvm
         securityContext:
           privileged: true
       volumes:
@@ -85,11 +88,15 @@ spec:
         hostPath:
           path: /dev/snd
           type: Directory
-      - name: video0
+      - name: nvidia0
         hostPath:
-          path: /dev/video0
-          type: ""
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
+          path: /dev/nvidia0
+          type: CharDevice
+      - name: nvidiactl
+        hostPath:
+          path: /dev/nvidiactl
+          type: CharDevice
+      - name: nvidia-uvm
+        hostPath:
+          path: /dev/nvidia-uvm
+          type: CharDevice
