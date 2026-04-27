@@ -202,7 +202,7 @@ if [ "$SKIP_BUILD" = true ]; then
     warn "Skipped (--skip-build flag)"
 else
     log "Building image (this takes 20-45 min on first run)..."
-    sudo docker build -t mic-access:latest . 2>&1 | tail -5 | tee -a "$LOG"
+    sudo docker build --network host -t mic-access:latest . 2>&1 | tail -5 | tee -a "$LOG"
     pass "Image built"
 
     log "Pushing to local registry..."
