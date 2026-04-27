@@ -59,13 +59,17 @@ spec:
         stdin: true
         env:
         - name: HF_HOME
-          value: /cache/huggingface
+          value: /hf-cache
         - name: NVIDIA_VISIBLE_DEVICES
           value: "all"
         - name: NVIDIA_DRIVER_CAPABILITIES
           value: compute,utility
         - name: PYTHONUNBUFFERED
           value: "1"
+        - name: OMP_NUM_THREADS
+          value: "4"
+        - name: MKL_NUM_THREADS
+          value: "4"
         resources:
           requests:
             memory: "8Gi"
@@ -88,13 +92,11 @@ spec:
           failureThreshold: 3
         volumeMounts:
         - name: hf-cache
-          mountPath: /cache/huggingface
+          mountPath: /hf-cache
         - name: snd
           mountPath: /dev/snd
         - name: video0
           mountPath: /dev/video0
-        - name: video1
-          mountPath: /dev/video1
         securityContext:
           privileged: true
       volumes:
@@ -108,11 +110,7 @@ spec:
       - name: video0
         hostPath:
           path: /dev/video0
-          type: CharDevice
-      - name: video1
-        hostPath:
-          path: /dev/video1
-          type: CharDevice
+          type: ""
       tolerations:
       - key: nvidia.com/gpu
         operator: Exists
