@@ -21,13 +21,15 @@ services:
       - HF_HOME=/hf-cache
       - NVIDIA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
     deploy:
       resources:
         limits:
-          memory: 8g
+          memory: 12g
           cpus: '4'
         reservations:
-          memory: 6g
+          memory: 8g
           devices:
             - driver: nvidia
               count: 1

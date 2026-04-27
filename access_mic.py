@@ -50,10 +50,9 @@ def runStartupPreflight():
         print("Hint: try --network host if Docker bridge DNS cannot resolve external names")
 
     try:
-        import requests
-
-        response = requests.get("https://huggingface.co", timeout=10)
-        print(f"HTTPS check: huggingface.co reachable (status={response.status_code})")
+        import urllib.request
+        with urllib.request.urlopen("https://huggingface.co", timeout=10) as resp:
+            print(f"HTTPS check: huggingface.co reachable (status={resp.status})")
     except Exception as err:
         print(f"WARNING: HTTPS check failed for huggingface.co: {err}")
 
@@ -199,7 +198,11 @@ def initialize():
 
     # GPU
     with printVerbosely("Check CUDA availability"):
-        GPU = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+        if not torch.cuda.is_available():
+            print("FATAL: GPU required but not found.")
+            print("Check: nvidia-smi, /dev/nvidia0, udev rule 99-nvidia-device-nodes.rules")
+            sys.exit(1)
+        GPU = torch.device("cuda:0")
         print(f"Using device: {GPU}")
 
     # CAMERA
@@ -486,6 +489,7 @@ with sd.InputStream(device=MICROPHONE_INDEX, channels=1, samplerate=MICROPHONE_S
                     result = lookForObject(query)
                     if result:
                         print(f"Found at (x, y) = {result}")
+                    time.sleep(0.4)  # Throttle to ~2-3 FPS to avoid GPU saturation
 
             sd.sleep(50)
     except KeyboardInterrupt:
