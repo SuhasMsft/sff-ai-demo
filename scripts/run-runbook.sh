@@ -164,9 +164,15 @@ DROPEOF
     log "Creating RuntimeClass..."
     printf '%s\n' 'apiVersion: node.k8s.io/v1' 'kind: RuntimeClass' 'metadata:' '  name: nvidia' 'handler: nvidia' | sudo k3s kubectl apply -f -
 
-    log "Installing NVIDIA device plugin..."
-    sudo k3s kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.17.1/deployments/static/nvidia-device-plugin.yml 2>/dev/null
+    log "Installing NVIDIA device plugin (v0.14.5 — compatible with Azure Linux toolkit)..."
+    sudo k3s kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.14.5/nvidia-device-plugin.yml 2>/dev/null
     sudo k3s kubectl -n kube-system rollout status daemonset/nvidia-device-plugin-daemonset --timeout=180s 2>/dev/null || warn "Device plugin not ready yet"
+
+    log "Generating CDI spec + configuring containerd..."
+    sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml 2>/dev/null || true
+    sudo nvidia-ctk runtime configure --runtime=containerd --config=/var/lib/rancher/k3s/agent/etc/containerd/config.toml 2>/dev/null || true
+    sudo systemctl restart k3s 2>/dev/null
+    sleep 10
 
     log "Verifying GPU visible to K3s..."
     GPUS=$(sudo k3s kubectl get nodes -o jsonpath='{.items[*].status.allocatable.nvidia\.com/gpu}' 2>/dev/null)
