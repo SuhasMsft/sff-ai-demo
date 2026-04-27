@@ -3,31 +3,6 @@ kind: Namespace
 metadata:
   name: speech
 ---
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: hf-cache-pv
-spec:
-  capacity:
-    storage: 20Gi
-  accessModes: [ReadWriteOnce]
-  hostPath:
-    path: /acsa/hf-models
-    type: DirectoryOrCreate
-  persistentVolumeReclaimPolicy: Retain
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: hf-cache-pvc
-  namespace: speech
-spec:
-  accessModes: [ReadWriteOnce]
-  resources:
-    requests:
-      storage: 20Gi
-  volumeName: hf-cache-pv
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -54,6 +29,8 @@ spec:
       - name: mic-access
         image: localhost:5000/mic-access:latest
         imagePullPolicy: Always
+        # FALLBACK (no registry): image: docker.io/library/mic-access:latest
+        # FALLBACK (no registry): imagePullPolicy: Never
         command: ["python3", "access_mic.py"]
         tty: true
         stdin: true
@@ -101,8 +78,9 @@ spec:
           privileged: true
       volumes:
       - name: hf-cache
-        persistentVolumeClaim:
-          claimName: hf-cache-pvc
+        hostPath:
+          path: /acsa/hf-models
+          type: DirectoryOrCreate
       - name: snd
         hostPath:
           path: /dev/snd
