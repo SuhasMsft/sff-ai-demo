@@ -198,12 +198,20 @@ def initialize():
 
     # GPU
     with printVerbosely("Check CUDA availability"):
-        if not torch.cuda.is_available():
-            print("FATAL: GPU required but not found.")
-            print("Check: nvidia-smi, /dev/nvidia0, udev rule 99-nvidia-device-nodes.rules")
-            sys.exit(1)
-        GPU = torch.device("cuda:0")
-        print(f"Using device: {GPU}")
+        if torch.cuda.is_available():
+            GPU = torch.device("cuda:0")
+            # Test if GPU FFT works (needed for Parakeet ASR)
+            try:
+                _t = torch.randn(1, 100).cuda()
+                torch.stft(_t, n_fft=64, return_complex=True, window=torch.hann_window(64).cuda())
+                del _t
+                print(f"Using device: {GPU} (cuFFT OK)")
+            except RuntimeError as e:
+                print(f"WARNING: GPU cuFFT failed ({e}). Falling back to CPU for ASR.")
+                GPU = torch.device("cpu")
+        else:
+            print("WARNING: CUDA not available. Using CPU (slower inference).")
+            GPU = torch.device("cpu")
 
     # CAMERA
     with printVerbosely("Prepare camera"):
